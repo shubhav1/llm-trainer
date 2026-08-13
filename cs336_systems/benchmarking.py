@@ -1,144 +1,202 @@
 import torch
 import timeit
-import modal
+import statistics
+import sys
+from contextlib import nullcontext
+import torch.cuda.nvtx as nvtx
+
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import AdamW
 
-app = modal.App("cs336-benchmarking")
-image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .pip_install(
-        "torch~=2.11.0", "einops>=0.8", "einx>=0.4", "jaxtyping>=0.3", "numpy>=2.4",
-    )
-    .add_local_python_source("cs336_basics")
-)
+MODEL_CONFIGS = {
+    "small": dict(d_model=768, d_ff=3072, num_layers=12, num_heads=12),
+    "medium": dict(d_model=1024, d_ff=4096, num_layers=24, num_heads=16),
+    "large": dict(d_model=1280, d_ff=5120, num_layers=36, num_heads=20),
+    "xl": dict(d_model=2560, d_ff=10240, num_layers=32, num_heads=32),
+    "10B": dict(d_model=4608, d_ff=12288, num_layers=50, num_heads=36)
+}
 
-@app.function(image=image, gpu="B200", timeout=1800)
-def benchmarking_script(d_model, d_ff, num_layers, num_heads, w, n):
+def run_step(model, optimizer, x, y, mode="full", precision="fp32"):
     """
-    A script that will initialize a basics Transformer model with the given
-    hyperparameters, create a random batch of data, and time forward-only, forward-and-
-    backward, and full training steps that include the optimizer step
+    Run one model step. Mode options: "forward", "forward_backward", "full". Precision options: "fp32", "bf16".
     """
+
+    device = x.device.type
+
+    optimizer.zero_grad()
+
+    # mixed precision if specified
+    if precision == "bf16" and device == "cuda":
+        context = torch.autocast("cuda", dtype=torch.bfloat16)
+    else:
+        context = nullcontext()
+
+    # forward
+    with nvtx.range("forward_pass"):
+        with context:
+            logits = model(x)
+
+    # stop if mode = forward
+    if mode == "forward":
+        return logits
+
+    # loss + backward
+    with nvtx.range("backward_pass"):
+        # new context for loss computation
+        if precision == "bf16" and device == "cuda":
+            loss_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        else:
+            loss_context = nullcontext()
+
+        with loss_context:
+            loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+
+        loss.backward()
+
+    # stop if mode = forward_backward
+    if mode == "forward_backward":
+        return loss
+
+    # optimizer step
+    with nvtx.range("optimizer_step"):
+        optimizer.step()
+
+    return loss
+
+
+def benchmarking_script(d_model, d_ff, num_layers, num_heads, w, n, context_length=512,
+                        batch_size=4, mode="full", precision="fp32", measurement="timing"):
+    """
+    Initialize a Transformer model and benchmark/profile it.
+    mode options: "forward", "forward_backward", "full"
+    precision options: "fp32", "bf16"
+    measurement options: "timing", "profile", "memory"
+    """
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # initialize model based on given hyperparameters
-    model = BasicsTransformerLM(vocab_size=10000, context_length=512, 
-                                d_model=d_model, num_layers=num_layers, 
-                                num_heads=num_heads, d_ff=d_ff).to(device)
-
-    # generate random batch of data
-    batch_size = 4
     vocab_size = 10000
-    context_length = 512
+    model = BasicsTransformerLM(vocab_size=vocab_size, context_length=context_length, d_model=d_model,
+                                num_layers=num_layers, num_heads=num_heads, d_ff=d_ff).to(device)
+
+    # generate random batch
     x = torch.randint(0, vocab_size, (batch_size, context_length), device=device)
     y = torch.randint(0, vocab_size, (batch_size, context_length), device=device)
 
-    optimizer = AdamW(model.parameters()) 
+    optimizer = AdamW(model.parameters())
 
-    # forward only
-    def forward_only():
-        # warmup steps
-        for _ in range(w):
-            optimizer.zero_grad()
-            model(x)
-
-        # timed steps
-        times = []
+    # warmup steps
+    for _ in range(w):
+        run_step(model=model,  optimizer=optimizer, x=x, y=y, mode=mode, precision=precision)
         torch.cuda.synchronize() if device == "cuda" else None
-        for _ in range(n):
-            optimizer.zero_grad()
+
+    # timing benchmark
+    if measurement == "timing":
+        times = []
+
+        torch.cuda.synchronize() if device == "cuda" else None
+        for step in range(n):
             start_time = timeit.default_timer()
-            model(x)
+
+            run_step(model=model,  optimizer=optimizer, x=x, y=y, mode=mode, precision=precision)
+
             torch.cuda.synchronize() if device == "cuda" else None
             times.append(timeit.default_timer() - start_time)
 
-        times = torch.tensor(times)
-        return times
+        return {
+            "mean": statistics.mean(times),
+            "std": statistics.stdev(times) if len(times) > 1 else 0.0,
+        }
 
-    def forward_and_backward():
-        # warmup steps
-        for _ in range(w):
-            optimizer.zero_grad()
-            logits = model(x)
-            loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
-            loss.backward()
+    # Nsight profiling
+    elif measurement == "profile":
+        for step in range(n):
+            with nvtx.range(f"step_{step}"):
+                run_step(model=model,  optimizer=optimizer, x=x, y=y, mode=mode, precision=precision)
+                torch.cuda.synchronize() if device == "cuda" else None
+
+        return None
+
+    # pytorch memory profiling
+    elif measurement == "memory" and device == "cuda":
+
+        # clear empty cache
+        torch.cuda.empty_cache()
+
+        # start recording memory history.
+        torch.cuda.memory._record_memory_history(max_entries=1000000)
+
+        # profile n steps
+        for step in range(n):
+            with nvtx.range(f"step_{step}"):
+                run_step(model=model,  optimizer=optimizer, x=x, y=y, mode=mode, precision=precision)
+                torch.cuda.synchronize()
+
+        # save a pickle file to be loaded by pytorch's online tool
+        torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
+
+        # stop recording history
+        torch.cuda.memory._record_memory_history(enabled=None)
+
+        return None
+
+    else:
+        raise ValueError(f"unable to run {measurement}, or on device {device}")
 
 
-        # timed steps
-        times = []
-        torch.cuda.synchronize() if device == "cuda" else None
-        for _ in range(n):
-            optimizer.zero_grad()
-            start_time = timeit.default_timer()
-            logits = model(x)
-            loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
-            loss.backward()
-            torch.cuda.synchronize() if device == "cuda" else None
-            times.append(timeit.default_timer() - start_time)
-
-        times = torch.tensor(times)
-        return times
-
-    def full():
-        # warmup steps
-        for _ in range(w):
-            optimizer.zero_grad()
-            logits = model(x)
-            loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
-            loss.backward()
-            optimizer.step()
-
-        # timed steps
-        times = []
-        torch.cuda.synchronize() if device == "cuda" else None
-        for _ in range(n):
-            optimizer.zero_grad()
-            start_time = timeit.default_timer()
-            logits = model(x)
-            loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
-            loss.backward()
-            optimizer.step()
-            torch.cuda.synchronize() if device == "cuda" else None
-            times.append(timeit.default_timer() - start_time)
-
-        times = torch.tensor(times)
-        return times
-
-    fwd = forward_only()
-    fwdbwd = forward_and_backward()
-    fl = full()
-    return {
-        "forward": {"mean": fwd.mean().item(), "std": fwd.std().item()},
-        "forward_backward": {"mean": fwdbwd.mean().item(), "std": fwdbwd.std().item()},
-        "full": {"mean": fl.mean().item(), "std": fl.std().item()},
-    }
-
-@app.local_entrypoint()
 def main():
-    model_configs = {
-        "small":  dict(d_model=768,  d_ff=3072,  num_layers=12, num_heads=12),
-        "medium": dict(d_model=1024, d_ff=4096,  num_layers=24, num_heads=16),
-        "large":  dict(d_model=1280, d_ff=5120,  num_layers=36, num_heads=20),
-        "xl":     dict(d_model=2560, d_ff=10240, num_layers=32, num_heads=32),
-        "10B":    dict(d_model=4608, d_ff=12288, num_layers=50, num_heads=36),
-    }
-    warmup_steps = 2
-    timed_steps = 10
-    print(f"{warmup_steps} warmup steps, {timed_steps} timed steps")
-    for model in model_configs:
-        result = benchmarking_script.remote(**model_configs[model], w=warmup_steps, n=timed_steps)
-        print(f"Model: {model}")
-        print(f"Forward only:         Mean ({result['forward']['mean']:.4f}s), Std ({result['forward']['std']:.4f}s)")
-        print(f"Forward and backward: Mean ({result['forward_backward']['mean']:.4f}s), Std ({result['forward_backward']['std']:.4f}s)")
-        print(f"Full training step:   Mean ({result['full']['mean']:.4f}s), Std ({result['full']['std']:.4f}s)")
-        print("")
+    # get command line inputs
+    # benchmarking.py model_name context_length warmup_steps measured_steps mode precision measurement
+    # benchmarking.py small 512 5 5 full fp32 timing
+    model_name = sys.argv[1]
+    context_length = int(sys.argv[2])
+    warmup_steps = int(sys.argv[3])
+    measured_steps = int(sys.argv[4])
+    mode = sys.argv[5]
+    precision = sys.argv[6]
+    measurement = sys.argv[7]
+
+    # catch errors before jumping into runs
+    if mode not in ("forward", "forward_backward", "full"):
+        raise ValueError("mode must be forward, forward_backward, or full")
+    if precision not in ("fp32", "bf16"):
+        raise ValueError("precision must be fp32 or bf16")
+    if measurement not in ("timing", "profile", "memory"):
+        raise ValueError("measurement must be timing, profile, or memory")
+    if model_name not in MODEL_CONFIGS:
+        raise ValueError(f"unknown model: {model_name}")
+
+    batch_size = 4
+    
+    print(f"Model:          {model_name}")
+    print(f"Context length: {context_length}")
+    print(f"Batch size:     {batch_size}")
+    print(f"Mode:           {mode}")
+    print(f"Precision:      {precision}")
+    print(f"Measurement:    {measurement}")
+    print(f"Warmup steps:   {warmup_steps}")
+    print(f"Measured steps: {measured_steps}\n")
+
+    result = benchmarking_script(**MODEL_CONFIGS[model_name], w=warmup_steps, n=measured_steps,
+                                 context_length=context_length, batch_size=batch_size, mode=mode,
+                                 precision=precision, measurement=measurement)
+
+    if measurement == "timing":
+        print(f"Mean: {result['mean']:.6f}s")
+        print(f"Std:  {result['std']:.6f}s")
+
+    elif measurement == "profile":
+        print("Profiling run complete.")
+
+    elif measurement == "memory":
+        print(f"Memory snapshot written to memory_snapshot.pickle")
 
 if __name__ == "__main__":
     main()
 
 """
-Results:
+Timing analysis/results:
 
 5 warmup steps, 10 timed steps
 Model: small
@@ -230,4 +288,28 @@ Analysis: Adding 2 warmup iterations gets the means across all steps/models to a
 when there are 5 warmup iterations. Std dev is also similar, though there is a bit of noise where
 some scenarios have higher and some have lower std dev than the 5 warmup iteration scenario.
 
+"""
+
+
+"""
+NSight profiling analysis/results:
+
+for 512 context len, small size, over 5 observed profiled steps, ran on A100:
+
+These are insights based on the profiling results viewed separately on the NVIDIA Nsight Systems GUI.
+
+Forward pass is taking ~44 ms for CUDA HW NVTX projection, but on CPU (python3) it is taking ~24 ms. Both start
+at the same time (same as when the step itself starts), but the GPU is still computing by the time CPU moves onto
+the next step.
+
+During forward pass, the kernel that takes up most of the time is ampere_sgemm_128x32_tn, taking 32% of kernel 
+time. It occurs 24 times. This is not the same as the kernel that takes the most time in forward + backward, 
+that one is different size (ampere_sgemm_64x32_sliced1x4_nt).
+
+Asside from matmuls, the kernels that take up non trivial time in forward pass are variations of elementwise 
+and vectorized elementwise kernels.
+
+The ampere_sgemm (matmul) kernels tak up 78.4% of CUDA HW time in the forward pass, however they take up only
+69.3% of CUDA HW time in the entire step (forward + backward + optimizer step). Other kernels take up time across
+the entire step (not just elementwise, but also others like reduce, scatter gather, SoftMax specific stuff, etc.)
 """
