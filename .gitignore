@@ -166,3 +166,7 @@ trace_*.json
 *.nsys-rep
 trace_*.json
 *.nsys-rep
+
+.DS_Store
+*.sqlite
+*.nsys-rep
