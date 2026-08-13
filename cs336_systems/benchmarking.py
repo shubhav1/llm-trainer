@@ -5,10 +5,11 @@ from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import AdamW
 
 app = modal.App("cs336-benchmarking")
-
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install("torch~=2.11.0", "einops>=0.8", "einx>=0.4", "jaxtyping>=0.3", "numpy>=2.4")
+    .pip_install(
+        "torch~=2.11.0", "einops>=0.8", "einx>=0.4", "jaxtyping>=0.3", "numpy>=2.4",
+    )
     .add_local_python_source("cs336_basics")
 )
 
@@ -19,7 +20,6 @@ def benchmarking_script(d_model, d_ff, num_layers, num_heads, w, n):
     hyperparameters, create a random batch of data, and time forward-only, forward-and-
     backward, and full training steps that include the optimizer step
     """
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # initialize model based on given hyperparameters
@@ -170,7 +170,7 @@ In the medium and large models, standard deviation is comparitively high for ful
 this doesn't hold consistent for xl and small. This isn't enough information to differentiate if 
 this is a real finding or just noise. Besides that, std dev is generally low across models/steps.
 
----------------------------------------------------
+-------------------------------------------------------------------------------------------------
 0 warmup steps, 10 timed steps
 Model: small
 Forward only:         Mean (0.0385s), Std (0.0698s)
@@ -195,13 +195,13 @@ Full training step:   Mean (0.9421s), Std (0.0045s)
 Model: 10B
 unable to run due to memory constraints on the GPU
 
-Analysis: Removing the warmup impacts the small model the most, perhaps because the initial iterations
-impact the mean/std dev more than in larger models. In the small model, forward and forward + backward
-are significantly higher without warmup. The increase is less apparent in small model's full step and
-in other models. Std dev is higher for most of the steps across all models, though the difference is
-highest in the small model.
+Analysis: Removing the warmup impacts the small model the most, perhaps because the initial 
+iterations impact the mean/std dev more than in larger models. In the small model, forward and 
+forward + backward are significantly higher without warmup. The increase is less apparent in small 
+model's full step and in other models. Std dev is higher for most of the steps across all models, 
+though the difference is highest in the small model.
 
----------------------------------------------------
+-------------------------------------------------------------------------------------------------
 2 warmup steps, 10 timed steps
 Model: small
 Forward only:         Mean (0.0164s), Std (0.0000s)
@@ -229,4 +229,5 @@ unable to run due to memory constraints on the GPU
 Analysis: Adding 2 warmup iterations gets the means across all steps/models to around the same as
 when there are 5 warmup iterations. Std dev is also similar, though there is a bit of noise where
 some scenarios have higher and some have lower std dev than the 5 warmup iteration scenario.
+
 """
