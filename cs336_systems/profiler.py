@@ -61,8 +61,8 @@ def profile_model(d_model, d_ff, num_layers, num_heads, w, n, context_length):
 def main():
     model_configs = {
         "small":  dict(d_model=768,  d_ff=3072,  num_layers=12, num_heads=12),
-        "medium": dict(d_model=1024, d_ff=4096,  num_layers=24, num_heads=16),
-        "xl":     dict(d_model=2560, d_ff=10240, num_layers=32, num_heads=32),
+        # "medium": dict(d_model=1024, d_ff=4096,  num_layers=24, num_heads=16),
+        # "xl":     dict(d_model=2560, d_ff=10240, num_layers=32, num_heads=32),
     }
 
     warmup_steps = 5
