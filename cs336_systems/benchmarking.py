@@ -134,7 +134,8 @@ def benchmarking_script(d_model, d_ff, num_layers, num_heads, w, n, context_leng
                 torch.cuda.synchronize()
 
         # save a pickle file to be loaded by pytorch's online tool
-        torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
+        snapshot_name = f"memory_{d_model}_{context_length}_{mode}_{precision}.pickle"
+        torch.cuda.memory._dump_snapshot(snapshot_name)
 
         # stop recording history
         torch.cuda.memory._record_memory_history(enabled=None)
