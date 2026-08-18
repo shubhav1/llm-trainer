@@ -3,10 +3,15 @@ import timeit
 import statistics
 import sys
 from contextlib import nullcontext
-import torch.cuda.nvtx as nvtx
 
-from cs336_basics.model import BasicsTransformerLM
-from cs336_basics.optimizer import AdamW
+from model import BasicsTransformerLM
+from optimizer import AdamW
+
+
+def nvtx_range(name):
+    if torch.cuda.is_available():
+        return torch.cuda.nvtx.range(name)
+    return nullcontext()
 
 MODEL_CONFIGS = {
     "small": dict(d_model=768, d_ff=3072, num_layers=12, num_heads=12),
@@ -32,7 +37,7 @@ def run_step(model, optimizer, x, y, mode="full", precision="fp32"):
         context = nullcontext()
 
     # forward
-    with nvtx.range("forward_pass"):
+    with nvtx_range("forward_pass"):
         with context:
             logits = model(x)
 
@@ -41,7 +46,7 @@ def run_step(model, optimizer, x, y, mode="full", precision="fp32"):
         return logits
 
     # loss + backward
-    with nvtx.range("backward_pass"):
+    with nvtx_range("backward_pass"):
         # new context for loss computation
         if precision == "bf16" and device == "cuda":
             loss_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
@@ -58,7 +63,7 @@ def run_step(model, optimizer, x, y, mode="full", precision="fp32"):
         return loss
 
     # optimizer step
-    with nvtx.range("optimizer_step"):
+    with nvtx_range("optimizer_step"):
         optimizer.step()
 
     return loss
@@ -111,9 +116,10 @@ def benchmarking_script(d_model, d_ff, num_layers, num_heads, w, n, context_leng
 
     # Nsight profiling
     elif measurement == "profile":
-        with torch.autograd.profiler.emit_nvtx():
+        profile_ctx = torch.autograd.profiler.emit_nvtx() if device == "cuda" else nullcontext()
+        with profile_ctx:
             for step in range(n):
-                with nvtx.range(f"step_{step}"):
+                with nvtx_range(f"step_{step}"):
                     run_step(model=model,  optimizer=optimizer, x=x, y=y, mode=mode, precision=precision)
                     torch.cuda.synchronize() if device == "cuda" else None
 
@@ -130,7 +136,7 @@ def benchmarking_script(d_model, d_ff, num_layers, num_heads, w, n, context_leng
 
         # profile n steps
         for step in range(n):
-            with nvtx.range(f"step_{step}"):
+            with nvtx_range(f"step_{step}"):
                 run_step(model=model,  optimizer=optimizer, x=x, y=y, mode=mode, precision=precision)
                 torch.cuda.synchronize()
 

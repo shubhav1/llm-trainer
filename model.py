@@ -13,7 +13,7 @@ from einops import einsum, rearrange
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from cs336_basics.nn_utils import softmax
+from nn_utils import softmax
 
 logger = logging.getLogger(__name__)
 
