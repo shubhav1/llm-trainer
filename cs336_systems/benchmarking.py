@@ -111,10 +111,11 @@ def benchmarking_script(d_model, d_ff, num_layers, num_heads, w, n, context_leng
 
     # Nsight profiling
     elif measurement == "profile":
-        for step in range(n):
-            with nvtx.range(f"step_{step}"):
-                run_step(model=model,  optimizer=optimizer, x=x, y=y, mode=mode, precision=precision)
-                torch.cuda.synchronize() if device == "cuda" else None
+        with torch.autograd.profiler.emit_nvtx():
+            for step in range(n):
+                with nvtx.range(f"step_{step}"):
+                    run_step(model=model,  optimizer=optimizer, x=x, y=y, mode=mode, precision=precision)
+                    torch.cuda.synchronize() if device == "cuda" else None
 
         return None
 
@@ -140,7 +141,7 @@ def benchmarking_script(d_model, d_ff, num_layers, num_heads, w, n, context_leng
         # stop recording history
         torch.cuda.memory._record_memory_history(enabled=None)
 
-        return None
+        return snapshot_name
 
     else:
         raise ValueError(f"unable to run {measurement}, or on device {device}")
@@ -191,7 +192,7 @@ def main():
         print("Profiling run complete.")
 
     elif measurement == "memory":
-        print(f"Memory snapshot written to memory_snapshot.pickle")
+        print(f"Memory snapshot written to {result}")
 
 if __name__ == "__main__":
     main()
@@ -313,4 +314,14 @@ and vectorized elementwise kernels.
 The ampere_sgemm (matmul) kernels tak up 78.4% of CUDA HW time in the forward pass, however they take up only
 69.3% of CUDA HW time in the entire step (forward + backward + optimizer step). Other kernels take up time across
 the entire step (not just elementwise, but also others like reduce, scatter gather, SoftMax specific stuff, etc.)
+"""
+
+"""
+memory profiling analysis/results:
+
+all trials used xl model. 
+For context length 128, peak memory usage for forward pass was around 17 GiB and for full step was around 52 GiB.
+For context length 512, peak memory usage for forward pass was around 38 GiB and for full step was around 66 GiB.
+
+
 """
