@@ -85,6 +85,8 @@ def benchmarking_script(d_model, d_ff, num_layers, num_heads, w, n, context_leng
     model = BasicsTransformerLM(vocab_size=vocab_size, context_length=context_length, d_model=d_model,
                                 num_layers=num_layers, num_heads=num_heads, d_ff=d_ff).to(device)
 
+    model = torch.compile(model)
+
     # generate random batch
     x = torch.randint(0, vocab_size, (batch_size, context_length), device=device)
     y = torch.randint(0, vocab_size, (batch_size, context_length), device=device)

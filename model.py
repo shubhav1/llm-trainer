@@ -211,8 +211,6 @@ class BasicsTransformerLM(nn.Module):
                 for _ in range(num_layers)
             ]
         )
-        for layer in self.layers:
-            layer = torch.compile(layer, fullgraph=True)
         self.ln_final = RMSNorm(d_model)
         self.lm_head = Linear(d_model, vocab_size)
         # Tie the weights, since the paper mentions that "we share the same weight
