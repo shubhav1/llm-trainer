@@ -104,15 +104,11 @@ def main ():
                 )
 
             except torch.OutOfMemoryError:
-                print(f"d={d}, seq_len={s}: CUDA OOM -- skipping")
+                print(f"d={d}, seq_len={s}: CUDA OOM, skipping")
                 Q = K = V = grad = out = causal_mask = None
                 torch.cuda.empty_cache()
-                
+
                 continue
-
-
-
-
 
 if __name__ == "__main__":
     main()

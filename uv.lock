@@ -87,6 +87,15 @@ wheels = [
 ]
 
 [[package]]
+name = "einsum"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/16/371528e03f3a661ecaba4948205fb06c257bf9054eaddea089e72d56d58a/einsum-0.3.0.tar.gz", hash = "sha256:e19db2c02ad5ea8acf2926a9eab995ec1802a9db0bb39646d71e96f7cec14e31", size = 5152, upload-time = "2022-04-22T06:15:02.653Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/91/d8c6ecbe3dfd2ddecbd08e095bc4388a71958a7e1c2dab772ca3daef50da/einsum-0.3.0-py3-none-any.whl", hash = "sha256:6d2b1f7932879d630969bfb599e09f8448dcbc38a2be6cee192b8a1ae02c52dc", size = 5100, upload-time = "2022-04-22T06:15:01.457Z" },
+]
+
+[[package]]
 name = "einx"
 version = "0.4.3"
 source = { registry = "https://pypi.org/simple" }
@@ -523,6 +532,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "einops" },
+    { name = "einsum" },
     { name = "einx" },
     { name = "jaxtyping" },
     { name = "numpy" },
@@ -532,6 +542,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "einops" },
+    { name = "einsum", specifier = ">=0.3.0" },
     { name = "einx" },
     { name = "jaxtyping" },
     { name = "numpy" },
